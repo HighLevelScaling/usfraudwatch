@@ -8,6 +8,8 @@ services:
     volumes:
       - ./src:/app/src
       - ./config:/app/config
+      - ./alembic:/app/alembic
+      - uploads_data:/app/uploads
     env_file:
       - .env
     environment:
@@ -37,3 +39,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  uploads_data:
