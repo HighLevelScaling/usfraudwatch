@@ -1,0 +1,174 @@
+{
+  "name": "State AG Monitor (MN & CA)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://oag.ca.gov/news/feed"
+      },
+      "id": "ca-ag-rss",
+      "name": "CA AG RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [480, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://www.ag.state.mn.us/Office/Communications.asp",
+        "options": {}
+      },
+      "id": "mn-ag-http",
+      "name": "MN AG Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 400]
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "links",
+              "cssSelector": "a[href*='press']",
+              "returnArray": true,
+              "returnValue": "html"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mn-extract",
+      "name": "Extract MN Press Links",
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process CA AG RSS items\nconst items = $input.all();\n\nreturn items.map(item => {\n  const json = item.json;\n  const text = ((json.title || '') + ' ' + (json.contentSnippet || json.description || '')).toLowerCase();\n  \n  // Check if fraud-related\n  const fraudKeywords = /fraud|scheme|corruption|bribery|theft|scam|deceptive|settlement|lawsuit|charged|indicted|sentenced/i;\n  if (!fraudKeywords.test(text)) return null;\n  \n  // Detect fraud type\n  let fraudType = 'other';\n  if (text.includes('healthcare') || text.includes('insurance')) fraudType = 'healthcare';\n  else if (text.includes('consumer') || text.includes('scam')) fraudType = 'financial';\n  else if (text.includes('tax')) fraudType = 'tax';\n  else if (text.includes('environment')) fraudType = 'government';\n  \n  return {\n    json: {\n      title: json.title,\n      source_url: json.link,\n      source_name: 'CA Attorney General',\n      published_at: json.pubDate || json.isoDate || new Date().toISOString(),\n      summary: json.contentSnippet || json.description || null,\n      fraud_type: fraudType,\n      state: 'CA',\n      importance_score: 70 // CA stories get priority\n    }\n  };\n}).filter(Boolean);"
+      },
+      "id": "process-ca",
+      "name": "Process CA Stories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse MN AG HTML for press releases\n// Note: This is a basic extraction - adjust selectors based on actual page structure\nconst html = $input.first().json.links || [];\n\nconst results = [];\n\n// MN AG doesn't have RSS, so we need to parse the HTML\n// This is a placeholder - you'll need to adjust based on actual page structure\nfor (const link of html.slice(0, 10)) {\n  // Extract href and text from anchor tags\n  const hrefMatch = link.match(/href=[\"']([^\"']+)[\"']/);\n  const textMatch = link.match(/>([^<]+)</);\n  \n  if (hrefMatch && textMatch) {\n    const href = hrefMatch[1];\n    const title = textMatch[1].trim();\n    \n    // Check if fraud-related\n    const fraudKeywords = /fraud|scheme|corruption|bribery|theft|scam|settlement|lawsuit|charged/i;\n    if (!fraudKeywords.test(title)) continue;\n    \n    results.push({\n      json: {\n        title: title,\n        source_url: href.startsWith('http') ? href : 'https://www.ag.state.mn.us' + href,\n        source_name: 'MN Attorney General',\n        published_at: new Date().toISOString(),\n        summary: null,\n        fraud_type: 'other',\n        state: 'MN',\n        importance_score: 75 // MN stories get high priority\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "process-mn",
+      "name": "Process MN Stories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge",
+      "name": "Merge State Stories",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SITE_URL }}/api/stories",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.INGESTION_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "save-to-api",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 300]
+    }
+  ],
+  "connections": {
+    "Every 2 Hours": {
+      "main": [
+        [
+          { "node": "CA AG RSS Feed", "type": "main", "index": 0 },
+          { "node": "MN AG Page", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "CA AG RSS Feed": {
+      "main": [
+        [{ "node": "Process CA Stories", "type": "main", "index": 0 }]
+      ]
+    },
+    "MN AG Page": {
+      "main": [
+        [{ "node": "Extract MN Press Links", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract MN Press Links": {
+      "main": [
+        [{ "node": "Process MN Stories", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process CA Stories": {
+      "main": [
+        [{ "node": "Merge State Stories", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process MN Stories": {
+      "main": [
+        [{ "node": "Merge State Stories", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge State Stories": {
+      "main": [
+        [{ "node": "Save to Database", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-17T00:00:00.000Z",
+  "versionId": "1"
+}

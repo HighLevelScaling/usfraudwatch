@@ -1,0 +1,301 @@
+{
+  "name": "Federal Fraud Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Hourly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://www.justice.gov/news/rss"
+      },
+      "id": "doj-rss",
+      "name": "DOJ RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [480, 140]
+    },
+    {
+      "parameters": {
+        "url": "https://www.fbi.gov/feeds/fbi-news-stories"
+      },
+      "id": "fbi-rss",
+      "name": "FBI RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://www.sec.gov/rss/litigation/litreleases.xml"
+      },
+      "id": "sec-rss",
+      "name": "SEC Litigation RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [480, 460]
+    },
+    {
+      "parameters": {
+        "url": "https://www.ftc.gov/feeds/press-releases.xml"
+      },
+      "id": "ftc-rss",
+      "name": "FTC RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [480, 620]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-feeds",
+      "name": "Merge All Feeds",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "fraud-filter",
+              "leftValue": "={{ ($json.title + ' ' + ($json.contentSnippet || $json.description || '')).toLowerCase() }}",
+              "rightValue": "fraud|embezzlement|scheme|corruption|bribery|theft|misappropriation|ponzi|kickback|conspiracy|indictment|sentenced|charged|pleaded guilty|wire fraud|mail fraud|securities fraud|healthcare fraud|tax evasion",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-fraud",
+      "name": "Filter Fraud Keywords",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract source name from feed\nconst item = $input.item.json;\n\nlet sourceName = 'Unknown';\nif (item.link?.includes('justice.gov')) sourceName = 'DOJ';\nelse if (item.link?.includes('fbi.gov')) sourceName = 'FBI';\nelse if (item.link?.includes('sec.gov')) sourceName = 'SEC';\nelse if (item.link?.includes('ftc.gov')) sourceName = 'FTC';\n\n// Extract state from title/content\nconst text = (item.title + ' ' + (item.contentSnippet || '')).toLowerCase();\nlet state = null;\n\nconst statePatterns = {\n  'minnesota': 'MN', 'mn ': 'MN',\n  'california': 'CA', 'ca ': 'CA',\n  'texas': 'TX', 'tx ': 'TX',\n  'new york': 'NY', 'ny ': 'NY',\n  'florida': 'FL', 'fl ': 'FL',\n  'illinois': 'IL', 'chicago': 'IL',\n  'pennsylvania': 'PA', 'philadelphia': 'PA',\n  'ohio': 'OH',\n  'georgia': 'GA', 'atlanta': 'GA',\n  'north carolina': 'NC'\n};\n\nfor (const [pattern, code] of Object.entries(statePatterns)) {\n  if (text.includes(pattern)) {\n    state = code;\n    break;\n  }\n}\n\n// Detect fraud type\nlet fraudType = 'other';\nif (text.includes('healthcare') || text.includes('medicare') || text.includes('medicaid')) fraudType = 'healthcare';\nelse if (text.includes('securities') || text.includes('investment') || text.includes('ponzi') || text.includes('stock')) fraudType = 'securities';\nelse if (text.includes('tax') || text.includes('irs')) fraudType = 'tax';\nelse if (text.includes('wire fraud') || text.includes('mail fraud')) fraudType = 'wire';\nelse if (text.includes('corruption') || text.includes('bribery') || text.includes('public official')) fraudType = 'corruption';\nelse if (text.includes('government') || text.includes('contract') || text.includes('federal')) fraudType = 'government';\nelse if (text.includes('welfare') || text.includes('benefits') || text.includes('snap') || text.includes('unemployment')) fraudType = 'welfare';\nelse if (text.includes('insurance')) fraudType = 'insurance';\nelse if (text.includes('bank') || text.includes('financial') || text.includes('loan')) fraudType = 'financial';\n\n// Calculate importance score\nlet importance = 50;\n\n// Boost for dollar amounts\nconst amounts = text.match(/\\$[\\d,]+(?:\\.\\d{2})?(?:\\s*(?:million|billion|thousand))?/gi) || [];\nif (amounts.length > 0) {\n  const maxAmount = amounts.reduce((max, amt) => {\n    let value = parseFloat(amt.replace(/[$,]/g, ''));\n    if (amt.toLowerCase().includes('billion')) value *= 1000000000;\n    else if (amt.toLowerCase().includes('million')) value *= 1000000;\n    else if (amt.toLowerCase().includes('thousand')) value *= 1000;\n    return Math.max(max, value);\n  }, 0);\n  \n  if (maxAmount > 1000000000) importance += 30;\n  else if (maxAmount > 100000000) importance += 25;\n  else if (maxAmount > 10000000) importance += 20;\n  else if (maxAmount > 1000000) importance += 15;\n  else if (maxAmount > 100000) importance += 10;\n}\n\n// Boost for priority states\nif (state === 'MN' || state === 'CA') importance += 15;\n\n// Boost for federal sources\nif (sourceName === 'DOJ' || sourceName === 'FBI') importance += 10;\n\n// Boost for sentencing/conviction (more newsworthy)\nif (text.includes('sentenced') || text.includes('convicted') || text.includes('pleaded guilty')) importance += 5;\n\nimportance = Math.min(importance, 100);\n\nreturn {\n  title: item.title,\n  source_url: item.link,\n  source_name: sourceName,\n  published_at: item.pubDate || item.isoDate || new Date().toISOString(),\n  summary: item.contentSnippet || item.description || null,\n  fraud_type: fraudType,\n  state: state,\n  importance_score: importance,\n  entities: {\n    dollar_amounts: amounts\n  }\n};"
+      },
+      "id": "process-story",
+      "name": "Process & Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SITE_URL }}/api/stories",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.INGESTION_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "save-to-api",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "new-story",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-new",
+      "name": "Filter New Stories",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1680, 300]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "id": "aggregate",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1920, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-new",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-new",
+      "name": "Has New Stories?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2160, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@usfraudwatch.com",
+        "toEmail": "={{ $env.ALERT_EMAIL }}",
+        "subject": "=US Fraud Watch: {{ $json.data.length }} new stories ingested",
+        "text": "=New fraud stories have been added:\n\n{{ $json.data.map(s => '• ' + s.story?.title).join('\\n') }}\n\nView at: {{ $env.SITE_URL }}/stories"
+      },
+      "id": "send-alert",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2400, 200]
+    }
+  ],
+  "connections": {
+    "Hourly Trigger": {
+      "main": [
+        [
+          { "node": "DOJ RSS Feed", "type": "main", "index": 0 },
+          { "node": "FBI RSS Feed", "type": "main", "index": 0 },
+          { "node": "SEC Litigation RSS", "type": "main", "index": 0 },
+          { "node": "FTC RSS Feed", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "DOJ RSS Feed": {
+      "main": [
+        [{ "node": "Merge All Feeds", "type": "main", "index": 0 }]
+      ]
+    },
+    "FBI RSS Feed": {
+      "main": [
+        [{ "node": "Merge All Feeds", "type": "main", "index": 0 }]
+      ]
+    },
+    "SEC Litigation RSS": {
+      "main": [
+        [{ "node": "Merge All Feeds", "type": "main", "index": 0 }]
+      ]
+    },
+    "FTC RSS Feed": {
+      "main": [
+        [{ "node": "Merge All Feeds", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge All Feeds": {
+      "main": [
+        [{ "node": "Filter Fraud Keywords", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Fraud Keywords": {
+      "main": [
+        [{ "node": "Process & Classify", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process & Classify": {
+      "main": [
+        [{ "node": "Save to Database", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [{ "node": "Filter New Stories", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter New Stories": {
+      "main": [
+        [{ "node": "Aggregate Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [{ "node": "Has New Stories?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has New Stories?": {
+      "main": [
+        [{ "node": "Send Alert Email", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-17T00:00:00.000Z",
+  "versionId": "1"
+}
